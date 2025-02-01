@@ -8,6 +8,10 @@ import mogoSanitize from 'express-mongo-sanitize';
 import helmet from 'helmet';
 import hpp from 'hpp';
 import ConnectDB from './utils/database.js';
+import healthRouter from './routes/health.routes.js';
+import userRouter from './routes/user.routes.js';
+import marketRouter from './routes/market.routes.js';
+import productRouter from './routes/product.routes.js';
 
 const app = express();
 const port = process.env.PORT || 8000;
@@ -59,6 +63,11 @@ app.use((error, req, res, next) => {
     });
 });
 //routes
+app.use('/api/v1/health', healthRouter);
+app.use('/api/v1/user', userRouter);
+app.use('/api/v1/market', marketRouter);
+app.use('/api/v1/product', productRouter);
+
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 200,
