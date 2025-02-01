@@ -1,3 +1,6 @@
+import Product from '../models/product.model.js';
+import Animal from '../models/animal.model.js';
+
 const getAllProducts = async (req, res) => {};
 const getProductById = async (req, res) => {};
 const getProductsByCategory = async (req, res) => {};

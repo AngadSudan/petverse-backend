@@ -11,7 +11,7 @@ import ConnectDB from './utils/database.js';
 import healthRouter from './routes/health.routes.js';
 import userRouter from './routes/user.routes.js';
 import marketRouter from './routes/market.routes.js';
-import productRouter from './routes/product.routes.js';
+import productRouter from './routes/products.routes.js';
 
 const app = express();
 const port = process.env.PORT || 8000;
