@@ -4,16 +4,45 @@ import Product from '../models/product.models.js';
 import Order from '../models/order.models.js';
 import ApiError from '../utils/ApiError.js';
 import ApiResponse from '../utils/ApiResponse.js';
-import NodeGeocoder from 'node-geocoder';
+import axios from 'axios';
 import { CloudinaryUpload, CloudinaryDelete } from '../utils/cloudinary.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import fetch from 'node-fetch';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const geocoder = NodeGeocoder({
-    provider: 'google',
-    apiKey: process.env.GEOCODER_API_KEY, // Your API key
-    formatter: null,
-});
+async function getBase64Image(url) {
+    try {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        return Buffer.from(response.data, 'binary').toString('base64');
+    } catch (error) {
+        console.error('Error fetching image from URL:', error);
+        return null;
+    }
+}
+
+const getCoordinatesFromAddress = async ({ street, city, state, pincode }) => {
+    try {
+        const query = encodeURIComponent(
+            `${street}, ${city}, ${state}, ${pincode}, India`
+        );
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${query}`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!data || data.length === 0) {
+            throw new Error('No geolocation data found');
+        }
+
+        const latitude = parseFloat(data[0].lat);
+        const longitude = parseFloat(data[0].lon);
+
+        return { type: 'Point', coordinates: [longitude, latitude] };
+    } catch (error) {
+        console.error('Geocoding Error:', error.message);
+        return null;
+    }
+};
 
 const generateAccessAndRefreshToken = async (id) => {
     const user = await User.findById(id);
@@ -58,23 +87,17 @@ const registerUser = async (req, res) => {
         return res.status(400).json(new ApiError(400, 'pincode is required'));
 
     //save the longitude and latitude of the user
-    let coordinate = {};
-    try {
-        const geolocation = await Geocoder.geocode({
-            address: `${street} ${city} ${state} ${pincode}`,
-            country: 'India',
-        });
-        if (!geolocation[0]) {
-            throw new Error('No geolocation data found');
-        }
-        const latitude = geolocation[0].latitude;
-        const longitude = geolocation[0].longitude;
-        coordinate = { type: 'Point', coordinates: [longitude, latitude] };
-    } catch (error) {
+    let coordinate = await getCoordinatesFromAddress({
+        street,
+        city,
+        state,
+        pincode,
+    });
+
+    if (!coordinate)
         return res
             .status(400)
-            .json(new ApiError(400, 'Invalid address or unable to geocode'));
-    }
+            .json(new ApiError(400, 'Error while geocoding address'));
     //update the image to cloudinary url
 
     let profileImageUrl;
@@ -151,7 +174,7 @@ const loginUser = async (req, res) => {
             user._id,
             { refreshToken },
             { new: true }
-        );
+        ).select('-password -refreshToken');
         if (!updatedUser)
             return res
                 .status(500)
@@ -162,6 +185,10 @@ const loginUser = async (req, res) => {
                     )
                 );
 
+        res.cookie('accessToken', accessToken, {
+            httpOnly: true,
+            secure: true,
+        });
         return res.status(200).json(
             new ApiResponse(200, 'Login successful', {
                 accessToken,
@@ -177,9 +204,10 @@ const loginUser = async (req, res) => {
 
 const registerDoctor = async (req, res) => {
     const { name, username, phoneNumber, email, password, role } = req.body;
-    const { experience, qualification, perHourCharge, license } = req.body;
-    const licenseImage = req.file.license[0].path;
-    const profileImage = req.file.profile[0].path;
+    const { experience, description, qualification, perHourCharge, license } =
+        req.body;
+    const licenseImage = req.files.license[0].path;
+    const profileImage = req.files.profile[0].path;
 
     const { street, city, state, pincode } = req.body;
 
@@ -219,50 +247,23 @@ const registerDoctor = async (req, res) => {
             .json(new ApiError(400, 'Per hour charge is required'));
     if (!license)
         return res.status(400).json(new ApiError(400, 'License is required'));
-    if (!licenseImageUrl)
+    if (!licenseImage)
         return res
             .status(400)
             .json(new ApiError(400, 'License image is required'));
 
     //save the longitude and latitude of the user
-    let coordinate = {};
-    try {
-        // Format the address string
-        const fullAddress = `${street}, ${city}, ${state}, ${pincode}, India`;
+    let coordinate = await getCoordinatesFromAddress({
+        street,
+        city,
+        state,
+        pincode,
+    });
 
-        // Get geocoding results
-        const results = await geocoder.geocode(fullAddress);
-
-        // Check if we got valid results
-        if (!results || results.length === 0) {
-            return res
-                .status(400)
-                .json(
-                    new ApiError(
-                        400,
-                        'Could not find coordinates for the provided address'
-                    )
-                );
-        }
-
-        // Extract coordinates
-        const { latitude, longitude } = results[0];
-
-        // Format for GeoJSON Point type
-        coordinate = {
-            type: 'Point',
-            coordinates: [longitude, latitude],
-        };
-    } catch (error) {
-        console.error('Geocoding error:', error);
+    if (!coordinate)
         return res
             .status(400)
-            .json(
-                new ApiError(400, 'Error while geocoding address', [
-                    error.message,
-                ])
-            );
-    }
+            .json(new ApiError(400, 'Error while geocoding address'));
     //images uploading
     let profileImageUrl;
     if (!profileImage) {
@@ -455,6 +456,7 @@ const userLogout = async (req, res) => {
 const updateDoctorDetails = async (req, res) => {
     try {
         const doctorId = req.user._id;
+        console.log(doctorId);
         const {
             description,
             experience,
@@ -464,25 +466,25 @@ const updateDoctorDetails = async (req, res) => {
             licenseImageUrl,
         } = req.body;
 
-        if (!doctorId || !licenseImageUrl) {
+        if (!doctorId && !licenseImageUrl) {
             return res.status(400).json({
                 message: 'Doctor ID and license image URL are required',
             });
         }
 
         // Find existing doctor
-        const userdoctor = await User.findById(doctorId).doctorProfile;
+        const userdoctor = await User.findById(doctorId);
         if (!userdoctor)
             return res
                 .status(404)
                 .json(new ApiError(404, 'user is not a doctor'));
-        const doctor = await Doctor.findById(userdoctor);
+        const doctor = await Doctor.findById(userdoctor.doctorProfile);
         if (!doctor) {
             return res.status(404).json(new ApiError(404, 'Doctor not found'));
         }
 
         // Initialize Gemini Vision model (free tier)
-        const model = genAI.getGenerativeModel({ model: 'gemini-pro-vision' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
         // Create a simpler prompt for the free tier
         const prompt = `Analyze this medical license image and answer the following questions:
@@ -492,7 +494,7 @@ const updateDoctorDetails = async (req, res) => {
             
             Compare with these provided details:
             - License number should be: ${license}
-            - Expected qualifications: ${qualification.join(', ')}
+            - Expected qualifications: ${qualification}
             
             Format your response exactly like this example:
             {
@@ -502,18 +504,29 @@ const updateDoctorDetails = async (req, res) => {
                 "matchesProvided": true,
                 "confidence": 0.9
             }`;
+        const base64Image = await getBase64Image(doctor.licenseImageUrl);
+
+        if (!base64Image) {
+            return res.status(400).json({
+                message: 'Failed to fetch and convert license image',
+            });
+        }
 
         const result = await model.generateContent([
             {
                 inlineData: {
-                    data: licenseImageUrl,
+                    data: base64Image, // ✅ Now we pass Base64 data
                     mimeType: 'image/jpeg',
                 },
             },
             prompt,
         ]);
 
-        const aiAnalysis = JSON.parse(result.response.text());
+        let quizContent = result.response.text();
+        quizContent = quizContent
+            .replace(/```json\n?/, '')
+            .replace(/```\n?$/, '');
+        const aiAnalysis = JSON.parse(quizContent);
 
         // Simplified verification logic for free tier
         const shouldVerify =
@@ -521,6 +534,12 @@ const updateDoctorDetails = async (req, res) => {
             aiAnalysis.matchesProvided &&
             aiAnalysis.confidence > 0.8;
 
+        if (!shouldVerify) {
+            return res.status(400).json({
+                message: 'License verification failed',
+                aiAnalysis,
+            });
+        }
         // Update doctor details
         const updatedDoctor = await Doctor.findByIdAndUpdate(
             doctorId,
@@ -540,7 +559,7 @@ const updateDoctorDetails = async (req, res) => {
             new ApiResponse(200, 'Doctor details updated successfully', {
                 message: 'Doctor details updated successfully',
                 doctor: {
-                    ...updatedDoctor.toObject(),
+                    ...updatedDoctor,
                     verificationDetails: {
                         isVerified: shouldVerify,
                         aiAnalysis: {
@@ -959,7 +978,7 @@ const showlistedAnimals = async (req, res) => {
 
 const removelistedAnimals = async (req, res) => {
     const { productId } = req.body;
-
+    const user = req.user._id;
     if (!productId) {
         return res
             .status(400)

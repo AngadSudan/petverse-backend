@@ -1,8 +1,7 @@
 import { v2 as Cloudinary } from 'cloudinary';
-import fs from 'fs/promises';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
-
 Cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -11,23 +10,31 @@ Cloudinary.config({
 
 async function CloudinaryUpload(filepath) {
     try {
-        if (!filepath) return null;
+        if (!filepath || !fs.existsSync(filepath)) {
+            console.error('File path is invalid or does not exist:', filepath);
+            return null;
+        }
 
         const response = await Cloudinary.uploader.upload(filepath, {
             resource_type: 'auto',
             flags: 'attachment',
         });
 
-        fs.unlinkSync(filepath);
-        console.log('response was sent successfully', response);
-        return response;
+        console.log('File uploaded successfully:', response.secure_url);
 
-        // res.send(`file uploaded perfectly ${response.url}`);
+        // Delete file after successful upload
+        if (fs.existsSync(filepath)) {
+            fs.unlinkSync(filepath);
+        }
+
+        return response.secure_url;
     } catch (error) {
+        console.error('Error uploading to Cloudinary:', error);
+
+        // Delete file if it still exists after failure
         if (filepath && fs.existsSync(filepath)) {
             fs.unlinkSync(filepath);
         }
-        console.log('An error occured', error);
 
         return null;
     }
@@ -47,7 +54,7 @@ async function CloudinaryDelete(publicId) {
             console.warn('Cloudinary deletion result:', response.result);
         }
 
-        return response;
+        return response.secure_url;
     } catch (error) {
         console.error('Error during Cloudinary deletion:', error);
         throw error;
